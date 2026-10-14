@@ -20,11 +20,12 @@ from youtube_download import (api_key, download_videos, download_videos_locally,
                               expand_links, parse_links, DownloadError)
 
 
-BACKGROUND = "#eef2f6"
+BACKGROUND = "#f5f7fa"
 SURFACE = "#ffffff"
-FOREGROUND = "#17253b"
-MUTED = "#61718a"
-ACCENT = "#375cf5"
+FOREGROUND = "#1c2938"
+MUTED = "#667587"
+ACCENT = "#2563eb"
+BORDER = "#dde4ec"
 
 
 def format_time(seconds: float) -> str:
@@ -36,8 +37,8 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Minha coleção de músicas · MP3")
-        self.geometry("1080x790")
-        self.minsize(850, 660)
+        self.geometry("1060x760")
+        self.minsize(720, 500)
         self.configure(bg=BACKGROUND)
 
         self.paths: list[Path] = []
@@ -69,54 +70,88 @@ class App(tk.Tk):
         if "clam" in style.theme_names():
             style.theme_use("clam")
         style.configure("TFrame", background=BACKGROUND)
-        style.configure("Card.TFrame", background=SURFACE)
+        style.configure("Card.TFrame", background=SURFACE, borderwidth=1,
+                        bordercolor=BORDER, relief="solid")
+        style.configure("CardInner.TFrame", background=SURFACE)
+        style.configure("Footer.TFrame", background=SURFACE)
         style.configure("TLabel", background=BACKGROUND, foreground=FOREGROUND, font=("Segoe UI", 10))
         style.configure("Card.TLabel", background=SURFACE, foreground=FOREGROUND, font=("Segoe UI", 10))
         style.configure("CardMuted.TLabel", background=SURFACE, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Error.TLabel", foreground="#ae3745", font=("Segoe UI", 9))
-        style.configure("Title.TLabel", font=("Segoe UI Semibold", 21), foreground=FOREGROUND)
-        style.configure("Section.TLabel", background=SURFACE, foreground=FOREGROUND, font=("Segoe UI Semibold", 12))
+        style.configure("FooterMuted.TLabel", background=SURFACE, foreground=MUTED, font=("Segoe UI", 9))
+        style.configure("Error.TLabel", background=SURFACE, foreground="#ae3745", font=("Segoe UI", 9))
+        style.configure("Eyebrow.TLabel", foreground=ACCENT, font=("Segoe UI Semibold", 9))
+        style.configure("Title.TLabel", font=("Segoe UI Semibold", 23), foreground=FOREGROUND)
+        style.configure("Section.TLabel", background=SURFACE, foreground=FOREGROUND, font=("Segoe UI Semibold", 13))
         style.configure("Muted.TLabel", foreground=MUTED)
-        style.configure("TButton", font=("Segoe UI", 10), padding=(12, 8))
-        style.configure("Accent.TButton", background=ACCENT, foreground="white", padding=(16, 9))
-        style.map("Accent.TButton", background=[("active", "#2448df"), ("disabled", "#a8b9d9")])
-        style.configure("Treeview", font=("Segoe UI", 10), rowheight=29)
-        style.configure("Treeview.Heading", font=("Segoe UI Semibold", 10))
+        style.configure("TButton", font=("Segoe UI", 10), padding=(11, 7))
+        style.configure("Accent.TButton", background=ACCENT, foreground="white",
+                        bordercolor=ACCENT, padding=(15, 8))
+        style.map("Accent.TButton", background=[("active", "#1d4ed8"), ("disabled", "#a8b9d9")])
+        style.configure("Treeview", font=("Segoe UI", 10), rowheight=30,
+                        background=SURFACE, fieldbackground=SURFACE, foreground=FOREGROUND,
+                        borderwidth=0)
+        style.map("Treeview", background=[("selected", "#dbeafe")],
+                  foreground=[("selected", FOREGROUND)])
+        style.configure("Treeview.Heading", font=("Segoe UI Semibold", 10),
+                        background="#f0f4f8", foreground=FOREGROUND, padding=(6, 8))
 
     def _layout(self) -> None:
-        outer = ttk.Frame(self, padding=22)
-        outer.pack(fill="both", expand=True)
+        shell = ttk.Frame(self)
+        shell.pack(fill="both", expand=True)
+        self.page_canvas = tk.Canvas(shell, bg=BACKGROUND, highlightthickness=0, bd=0)
+        page_scroll = ttk.Scrollbar(shell, orient="vertical", command=self.page_canvas.yview)
+        self.page_canvas.configure(yscrollcommand=page_scroll.set)
+        self.page_canvas.pack(side="left", fill="both", expand=True)
+        page_scroll.pack(side="right", fill="y")
+        outer = ttk.Frame(self.page_canvas, padding=(24, 22, 24, 26))
+        self.page_window = self.page_canvas.create_window((0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", self._update_scroll_region)
+        self.page_canvas.bind("<Configure>", self._resize_page)
+        self.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
+        self.bind_all("<Button-4>", self._on_mousewheel, add="+")
+        self.bind_all("<Button-5>", self._on_mousewheel, add="+")
 
-        ttk.Label(outer, text="Minha coleção de músicas", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
-            outer,
-            text="Cole links, baixe os MP3, corte o silêncio final e deixe tudo pronto para o pendrive.",
-            style="Muted.TLabel",
-        ).pack(anchor="w", pady=(2, 16))
+        ttk.Label(outer, text="SEU ESPAÇO DE ÁUDIO", style="Eyebrow.TLabel").pack(anchor="w")
+        ttk.Label(outer, text="Músicas prontas para levar", style="Title.TLabel").pack(anchor="w", pady=(2, 3))
+        ttk.Label(outer, text="Do YouTube ao pendrive em um só fluxo.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, 18))
 
-        import_card = ttk.Frame(outer, style="Card.TFrame", padding=16)
-        import_card.pack(fill="x", pady=(0, 13))
-        ttk.Label(import_card, text="01  Importar do YouTube", style="Section.TLabel").pack(anchor="w")
-        ttk.Label(import_card, text="Um vídeo ou playlist por linha. Aceita links do YouTube e YouTube Music.",
-                  style="CardMuted.TLabel").pack(anchor="w", pady=(3, 8))
+        import_card = ttk.Frame(outer, style="Card.TFrame", padding=20)
+        import_card.pack(fill="x", pady=(0, 14))
+        ttk.Label(import_card, text="01   Adicione músicas", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(import_card, text="Cole links de vídeos ou playlists, um por linha.",
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(3, 11))
         self.link_text = tk.Text(import_card, height=3, wrap="word", font=("Segoe UI", 10),
-                                 relief="solid", bd=1, highlightthickness=0, bg="#f8faff", fg=FOREGROUND,
-                                 insertbackground=FOREGROUND)
+                                 relief="solid", bd=1, highlightthickness=0, bg="#f9fbfd", fg=FOREGROUND,
+                                 insertbackground=FOREGROUND, padx=10, pady=9)
         self.link_text.pack(fill="x")
-        import_actions = ttk.Frame(import_card, style="Card.TFrame")
-        import_actions.pack(fill="x", pady=(10, 0))
-        self.download_button = ttk.Button(import_actions, text="Baixar e preparar para pendrive",
-                                           style="Accent.TButton", command=self._import_youtube)
+
+        ttk.Label(import_card, text="SALVAR EM", style="CardMuted.TLabel").pack(anchor="w", pady=(16, 6))
+        destination = ttk.Frame(import_card, style="CardInner.TFrame")
+        destination.pack(fill="x")
+        self.destination_entry = ttk.Entry(destination, textvariable=self.output_dir)
+        self.destination_entry.pack(side="left", fill="x", expand=True)
+        self.folder_button = ttk.Button(destination, text="Escolher pasta", command=self._choose_folder)
+        self.folder_button.pack(side="left", padx=(8, 0))
+        self.destination_label = ttk.Label(import_card, textvariable=self.destination_hint,
+                                           style="CardMuted.TLabel", wraplength=820)
+        self.destination_label.pack(anchor="w", pady=(7, 0))
+
+        import_actions = ttk.Frame(import_card, style="CardInner.TFrame")
+        import_actions.pack(fill="x", pady=(15, 0))
+        self.download_button = ttk.Button(import_actions, text="Baixar e preparar músicas",
+                                          style="Accent.TButton", command=self._import_youtube)
         self.download_button.pack(side="left")
-        ttk.Label(import_actions, text="Downloads e resultados ficam em pastas separadas.",
-                  style="CardMuted.TLabel").pack(side="left", padx=12)
-        ttk.Label(import_card, textvariable=self.source_status,
-                  style="CardMuted.TLabel").pack(anchor="w", pady=(9, 0))
+        ttk.Label(import_actions, textvariable=self.source_status,
+                  style="CardMuted.TLabel").pack(side="left", padx=(12, 0))
 
-        ttk.Label(outer, text="02  Conferir e ajustar", font=("Segoe UI Semibold", 12)).pack(anchor="w", pady=(1, 7))
-
-        toolbar = ttk.Frame(outer)
-        toolbar.pack(fill="x", pady=(0, 10))
+        files_card = ttk.Frame(outer, style="Card.TFrame", padding=20)
+        files_card.pack(fill="x", pady=(0, 14))
+        ttk.Label(files_card, text="02   Confira os arquivos", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(files_card, text="Os downloads aparecem aqui. Você também pode adicionar MP3 do computador.",
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(3, 12))
+        toolbar = ttk.Frame(files_card, style="CardInner.TFrame")
+        toolbar.pack(fill="x", pady=(0, 11))
         self.add_button = ttk.Button(toolbar, text="+ Adicionar MP3", command=self._add_files)
         self.add_button.pack(side="left")
         self.remove_button = ttk.Button(toolbar, text="Remover seleção", command=self._remove_selected)
@@ -124,26 +159,35 @@ class App(tk.Tk):
         self.clear_button = ttk.Button(toolbar, text="Limpar lista", command=self._clear)
         self.clear_button.pack(side="left")
 
-        list_frame = ttk.Frame(outer)
-        list_frame.pack(fill="both", expand=True)
+        list_frame = ttk.Frame(files_card, style="CardInner.TFrame")
+        list_frame.pack(fill="x")
         columns = ("file", "duration", "remove", "status")
-        self.table = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended")
+        self.table = ttk.Treeview(list_frame, columns=columns, show="headings",
+                                  selectmode="extended", height=8)
         for key, label, width, anchor in (
-            ("file", "Arquivo", 410, "w"),
-            ("duration", "Duração", 95, "center"),
-            ("remove", "A cortar", 95, "center"),
-            ("status", "Resultado", 275, "w"),
+            ("file", "Arquivo", 250, "w"),
+            ("duration", "Duração", 80, "center"),
+            ("remove", "A cortar", 80, "center"),
+            ("status", "Resultado", 180, "w"),
         ):
             self.table.heading(key, text=label)
             self.table.column(key, width=width, anchor=anchor, stretch=(key in ("file", "status")))
-        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.table.yview)
-        self.table.configure(yscrollcommand=scroll.set)
+        table_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.table.yview)
+        self.table.configure(yscrollcommand=table_scroll.set)
+        self.table.tag_configure("alternate", background="#f8fafc")
         self.table.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        table_scroll.pack(side="right", fill="y")
+        ttk.Label(files_card, textvariable=self.summary,
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(10, 0))
 
-        options = ttk.Frame(outer)
-        options.pack(fill="x", pady=(15, 3))
-        ttk.Label(options, text="Sensibilidade:").pack(side="left")
+        finish_card = ttk.Frame(outer, style="Card.TFrame", padding=20)
+        finish_card.pack(fill="x")
+        ttk.Label(finish_card, text="03   Ajuste o corte", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(finish_card, text="Para MP3 locais ou para revisar os arquivos baixados.",
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(3, 11))
+        options = ttk.Frame(finish_card, style="CardInner.TFrame")
+        options.pack(fill="x")
+        ttk.Label(options, text="Sensibilidade", style="Card.TLabel").pack(side="left")
         self.sensitivity_box = ttk.Combobox(
             options,
             textvariable=self.sensitivity,
@@ -153,35 +197,57 @@ class App(tk.Tk):
         )
         self.sensitivity_box.pack(side="left", padx=(10, 12))
         self.sensitivity_box.bind("<<ComboboxSelected>>", self._reset_analyses)
-        ttk.Label(options, text="Limite mínimo: 1 s · margem preservada: 0,25 s", style="Muted.TLabel").pack(side="left")
-
-        destination = ttk.Frame(outer)
-        destination.pack(fill="x", pady=(12, 12))
-        ttk.Label(destination, text="Pasta base:").pack(side="left")
-        self.destination_entry = ttk.Entry(destination, textvariable=self.output_dir)
-        self.destination_entry.pack(side="left", fill="x", expand=True, padx=10)
-        self.folder_button = ttk.Button(destination, text="Escolher pasta", command=self._choose_folder)
-        self.folder_button.pack(side="left")
-        ttk.Label(outer, textvariable=self.destination_hint, style="Muted.TLabel").pack(anchor="w", pady=(0, 10))
-
-        actions = ttk.Frame(outer)
-        actions.pack(fill="x")
+        ttk.Label(options, text="Silêncio final mínimo: 1 s", style="CardMuted.TLabel").pack(side="left")
+        actions = ttk.Frame(finish_card, style="CardInner.TFrame")
+        actions.pack(fill="x", pady=(15, 0))
         self.analyze_button = ttk.Button(actions, text="Analisar MP3 da lista", command=self._analyze)
         self.analyze_button.pack(side="left")
         self.save_button = ttk.Button(actions, text="Salvar para pendrive", style="Accent.TButton", command=self._save)
         self.save_button.pack(side="left", padx=10)
-        self.cancel_button = ttk.Button(actions, text="Cancelar", command=self.cancel_event.set)
-        self.cancel_button.pack(side="left")
-        self.open_button = ttk.Button(actions, text="Abrir pasta para pendrive", command=self._open_folder)
-        self.open_button.pack(side="right")
 
-        ttk.Label(outer, textvariable=self.summary, style="Muted.TLabel").pack(anchor="w", pady=(14, 5))
-        self.progress = ttk.Progressbar(outer, mode="determinate")
+        footer = ttk.Frame(self, style="Footer.TFrame", padding=(24, 11))
+        footer.pack(fill="x", side="bottom")
+        footer_actions = ttk.Frame(footer, style="Footer.TFrame")
+        footer_actions.pack(side="right")
+        self.cancel_button = ttk.Button(footer_actions, text="Cancelar", command=self.cancel_event.set)
+        self.cancel_button.pack(side="left", padx=(0, 8))
+        self.open_button = ttk.Button(footer_actions, text="Abrir pasta pronta", command=self._open_folder)
+        self.open_button.pack(side="left")
+        status = ttk.Frame(footer, style="Footer.TFrame")
+        status.pack(side="left", fill="x", expand=True, padx=(0, 14))
+        self.progress = ttk.Progressbar(status, mode="determinate")
         self.progress.pack(fill="x")
-        ttk.Label(outer, textvariable=self.progress_text, style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
-        ttk.Label(outer, textvariable=self.failure_text, style="Error.TLabel",
-                  wraplength=980).pack(anchor="w", pady=(3, 0))
+        ttk.Label(status, textvariable=self.progress_text,
+                  style="FooterMuted.TLabel", wraplength=390).pack(anchor="w", pady=(4, 0))
+        ttk.Label(status, textvariable=self.failure_text, style="Error.TLabel",
+                  wraplength=390).pack(anchor="w", pady=(2, 0))
         self._update_buttons()
+
+    def _update_scroll_region(self, _event: tk.Event) -> None:
+        self.page_canvas.configure(scrollregion=self.page_canvas.bbox("all"))
+
+    def _resize_page(self, event: tk.Event) -> None:
+        self.page_canvas.itemconfigure(self.page_window, width=event.width)
+        self.destination_label.configure(wraplength=max(280, event.width - 110))
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        target = self.winfo_containing(event.x_root, event.y_root)
+        if target is None or target.winfo_toplevel() is not self:
+            return
+        if event.num == 4:
+            direction = -1
+        elif event.num == 5:
+            direction = 1
+        else:
+            steps = max(1, abs(event.delta) // 120) if event.delta else 0
+            direction = -steps if event.delta > 0 else steps
+        if not direction:
+            return
+        if target in (self.table, self.link_text):
+            first, last = target.yview()
+            if (direction < 0 and first > 0) or (direction > 0 and last < 1):
+                return
+        self.page_canvas.yview_scroll(direction, "units")
 
     def _threshold(self) -> int:
         return {"Conservador (−60 dB)": -60, "Normal (−50 dB)": -50,
@@ -249,7 +315,7 @@ class App(tk.Tk):
     def _refresh(self) -> None:
         for item in self.table.get_children():
             self.table.delete(item)
-        for path in self.paths:
+        for index, path in enumerate(self.paths):
             analysis = self.analyses.get(path)
             if path in self.errors:
                 status = "Erro: " + self.errors[path]
@@ -261,7 +327,7 @@ class App(tk.Tk):
                 status = "Sem corte · será copiado"
             else:
                 status = "Corte em " + format_time(analysis.cut_at)
-            self.table.insert("", "end", iid=str(path), values=(
+            self.table.insert("", "end", iid=str(path), tags=("alternate",) if index % 2 else (), values=(
                 path.name,
                 format_time(analysis.duration) if analysis else "—",
                 format_time(analysis.removed) if analysis and analysis.cut_at is not None else "—",
