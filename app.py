@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 from pathlib import Path
 import queue
 import subprocess
@@ -15,12 +16,15 @@ from audio import (
     Analysis, Cancelled, analyze_mp3, export_cut, export_unchanged,
     find_ffmpeg, processed_directory,
 )
+from youtube_download import (api_key, download_videos, download_videos_locally,
+                              expand_links, parse_links, DownloadError)
 
 
-BACKGROUND = "#f3f5f7"
-FOREGROUND = "#18212b"
-MUTED = "#5d6975"
-ACCENT = "#16705d"
+BACKGROUND = "#eef2f6"
+SURFACE = "#ffffff"
+FOREGROUND = "#17253b"
+MUTED = "#61718a"
+ACCENT = "#375cf5"
 
 
 def format_time(seconds: float) -> str:
@@ -31,9 +35,9 @@ def format_time(seconds: float) -> str:
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Corte de silêncio · MP3")
-        self.geometry("990x620")
-        self.minsize(760, 520)
+        self.title("Minha coleção de músicas · MP3")
+        self.geometry("1080x790")
+        self.minsize(850, 660)
         self.configure(bg=BACKGROUND)
 
         self.paths: list[Path] = []
@@ -46,8 +50,12 @@ class App(tk.Tk):
         self.output_dir = tk.StringVar(value=str(Path.cwd()))
         self.destination_hint = tk.StringVar()
         self.sensitivity = tk.StringVar(value="Conservador (−60 dB)")
-        self.summary = tk.StringVar(value="Adicione arquivos MP3 para começar.")
+        self.summary = tk.StringVar(value="Cole links do YouTube ou adicione arquivos MP3 para começar.")
         self.progress_text = tk.StringVar(value="Pronto")
+        self.source_status = tk.StringVar(value="Fonte: RapidAPI · modo local automático se indisponível")
+        self.failure_text = tk.StringVar()
+        self.link_text: tk.Text
+        self.download_failures: dict[str, str] = {}
 
         self._style()
         self._layout()
@@ -61,12 +69,17 @@ class App(tk.Tk):
         if "clam" in style.theme_names():
             style.theme_use("clam")
         style.configure("TFrame", background=BACKGROUND)
+        style.configure("Card.TFrame", background=SURFACE)
         style.configure("TLabel", background=BACKGROUND, foreground=FOREGROUND, font=("Segoe UI", 10))
+        style.configure("Card.TLabel", background=SURFACE, foreground=FOREGROUND, font=("Segoe UI", 10))
+        style.configure("CardMuted.TLabel", background=SURFACE, foreground=MUTED, font=("Segoe UI", 9))
+        style.configure("Error.TLabel", foreground="#ae3745", font=("Segoe UI", 9))
         style.configure("Title.TLabel", font=("Segoe UI Semibold", 21), foreground=FOREGROUND)
+        style.configure("Section.TLabel", background=SURFACE, foreground=FOREGROUND, font=("Segoe UI Semibold", 12))
         style.configure("Muted.TLabel", foreground=MUTED)
         style.configure("TButton", font=("Segoe UI", 10), padding=(12, 8))
-        style.configure("Accent.TButton", background=ACCENT, foreground="white")
-        style.map("Accent.TButton", background=[("active", "#115744"), ("disabled", "#a8b9b2")])
+        style.configure("Accent.TButton", background=ACCENT, foreground="white", padding=(16, 9))
+        style.map("Accent.TButton", background=[("active", "#2448df"), ("disabled", "#a8b9d9")])
         style.configure("Treeview", font=("Segoe UI", 10), rowheight=29)
         style.configure("Treeview.Heading", font=("Segoe UI Semibold", 10))
 
@@ -74,12 +87,33 @@ class App(tk.Tk):
         outer = ttk.Frame(self, padding=22)
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(outer, text="Corte de silêncio", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(outer, text="Minha coleção de músicas", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             outer,
-            text="Analise vários MP3 e reúna as cópias em uma pasta separada. Os originais são preservados.",
+            text="Cole links, baixe os MP3, corte o silêncio final e deixe tudo pronto para o pendrive.",
             style="Muted.TLabel",
-        ).pack(anchor="w", pady=(2, 18))
+        ).pack(anchor="w", pady=(2, 16))
+
+        import_card = ttk.Frame(outer, style="Card.TFrame", padding=16)
+        import_card.pack(fill="x", pady=(0, 13))
+        ttk.Label(import_card, text="01  Importar do YouTube", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(import_card, text="Um vídeo ou playlist por linha. Aceita links do YouTube e YouTube Music.",
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(3, 8))
+        self.link_text = tk.Text(import_card, height=3, wrap="word", font=("Segoe UI", 10),
+                                 relief="solid", bd=1, highlightthickness=0, bg="#f8faff", fg=FOREGROUND,
+                                 insertbackground=FOREGROUND)
+        self.link_text.pack(fill="x")
+        import_actions = ttk.Frame(import_card, style="Card.TFrame")
+        import_actions.pack(fill="x", pady=(10, 0))
+        self.download_button = ttk.Button(import_actions, text="Baixar e preparar para pendrive",
+                                           style="Accent.TButton", command=self._import_youtube)
+        self.download_button.pack(side="left")
+        ttk.Label(import_actions, text="Downloads e resultados ficam em pastas separadas.",
+                  style="CardMuted.TLabel").pack(side="left", padx=12)
+        ttk.Label(import_card, textvariable=self.source_status,
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(9, 0))
+
+        ttk.Label(outer, text="02  Conferir e ajustar", font=("Segoe UI Semibold", 12)).pack(anchor="w", pady=(1, 7))
 
         toolbar = ttk.Frame(outer)
         toolbar.pack(fill="x", pady=(0, 10))
@@ -132,19 +166,21 @@ class App(tk.Tk):
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x")
-        self.analyze_button = ttk.Button(actions, text="1  Analisar arquivos", command=self._analyze)
+        self.analyze_button = ttk.Button(actions, text="Analisar MP3 da lista", command=self._analyze)
         self.analyze_button.pack(side="left")
-        self.save_button = ttk.Button(actions, text="2  Salvar áudios", style="Accent.TButton", command=self._save)
+        self.save_button = ttk.Button(actions, text="Salvar para pendrive", style="Accent.TButton", command=self._save)
         self.save_button.pack(side="left", padx=10)
         self.cancel_button = ttk.Button(actions, text="Cancelar", command=self.cancel_event.set)
         self.cancel_button.pack(side="left")
-        self.open_button = ttk.Button(actions, text="Abrir áudios codificados", command=self._open_folder)
+        self.open_button = ttk.Button(actions, text="Abrir pasta para pendrive", command=self._open_folder)
         self.open_button.pack(side="right")
 
         ttk.Label(outer, textvariable=self.summary, style="Muted.TLabel").pack(anchor="w", pady=(14, 5))
         self.progress = ttk.Progressbar(outer, mode="determinate")
         self.progress.pack(fill="x")
         ttk.Label(outer, textvariable=self.progress_text, style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
+        ttk.Label(outer, textvariable=self.failure_text, style="Error.TLabel",
+                  wraplength=980).pack(anchor="w", pady=(3, 0))
         self._update_buttons()
 
     def _threshold(self) -> int:
@@ -235,16 +271,20 @@ class App(tk.Tk):
         if self.paths:
             self.summary.set(
                 f"{len(self.paths)} arquivo(s) · {len(self.analyses)} analisado(s) · "
-                f"{cuts} com corte. Todos os analisados serão organizados na pasta de destino."
+                f"{cuts} com corte · {len(self.saved)} pronto(s) para o pendrive."
             )
         else:
-            self.summary.set("Adicione arquivos MP3 para começar.")
+            self.summary.set("Cole links do YouTube ou adicione arquivos MP3 para começar.")
+        if self.download_failures:
+            self.summary.set(self.summary.get() + f" · {len(self.download_failures)} falha(s) no download")
         self._update_buttons()
 
     def _update_buttons(self) -> None:
         state = "disabled" if self.busy else "normal"
         for button in (self.add_button, self.remove_button, self.clear_button, self.folder_button):
             button.configure(state=state)
+        self.download_button.configure(state=state)
+        self.link_text.configure(state=state)
         self.sensitivity_box.configure(state="disabled" if self.busy else "readonly")
         self.destination_entry.configure(state=state)
         self.analyze_button.configure(state="normal" if self.paths and not self.busy else "disabled")
@@ -255,9 +295,89 @@ class App(tk.Tk):
         self.busy = True
         self.cancel_event.clear()
         self.progress.configure(maximum=max(1, count), value=0)
-        self.progress_text.set("Analisando..." if operation == "analyze" else "Salvando...")
+        self.progress_text.set({"analyze": "Analisando...", "save": "Salvando...",
+                                "youtube": "Lendo links..."}[operation])
         self._update_buttons()
         threading.Thread(target=worker, daemon=True).start()
+
+    def _import_youtube(self) -> None:
+        try:
+            links = parse_links(self.link_text.get("1.0", "end"))
+        except DownloadError as exc:
+            messagebox.showerror("Confira os links", str(exc))
+            return
+        key = api_key()
+        output_text = self.output_dir.get().strip()
+        if not output_text:
+            messagebox.showerror("Escolha uma pasta", "Selecione a pasta base para os arquivos.")
+            return
+        try:
+            ffmpeg = find_ffmpeg()
+        except RuntimeError as exc:
+            messagebox.showerror("FFmpeg necessário", str(exc))
+            return
+        base = Path(output_text).expanduser().resolve()
+        downloads = base / "Downloads do YouTube"
+        output = processed_directory(base)
+        threshold = self._threshold()
+        self.download_failures.clear()
+        self.failure_text.set("")
+        self.source_status.set("Conectando à RapidAPI...")
+
+        def worker() -> None:
+            try:
+                videos = expand_links(links, self.cancel_event)
+                if self.cancel_event.is_set():
+                    raise Cancelled()
+                self.events.put(("youtube_count", len(videos)))
+                if not videos:
+                    raise DownloadError("Nenhum vídeo disponível nos links informados.")
+                callback = lambda *event: self.events.put(event)
+                used_fallback = False
+                try:
+                    if not key:
+                        raise DownloadError("Chave RapidAPI ausente.")
+                    paths = asyncio.run(download_videos(videos, downloads, key,
+                                                        self.cancel_event, callback))
+                    self.events.put(("notice", "Fonte: RapidAPI"))
+                except Exception:
+                    used_fallback = True
+                    self.events.put(("notice", "RapidAPI indisponível; usando download local."))
+                    paths = download_videos_locally(videos, downloads, ffmpeg,
+                                                    self.cancel_event, callback)
+                missing = [video for video in videos if not any(
+                    path.name.endswith(f"[{video.id}].mp3") for path in paths)]
+                if missing and not self.cancel_event.is_set() and not used_fallback:
+                    self.events.put(("notice", "Concluindo músicas pendentes por download local."))
+                    paths.extend(download_videos_locally(missing, downloads, ffmpeg,
+                                                         self.cancel_event, callback))
+                if self.cancel_event.is_set():
+                    raise Cancelled()
+                if not paths:
+                    raise DownloadError("Nenhum MP3 foi baixado. Confira os erros dos links e tente novamente.")
+                for index, path in enumerate(paths, 1):
+                    if self.cancel_event.is_set():
+                        raise Cancelled()
+                    try:
+                        analysis = analyze_mp3(path, threshold, self.cancel_event, ffmpeg)
+                        self.events.put(("analysis", path, analysis))
+                        result = (export_cut(analysis, output, self.cancel_event, ffmpeg)
+                                  if analysis.cut_at is not None else
+                                  export_unchanged(analysis, output, self.cancel_event))
+                        self.events.put(("saved", path, result))
+                    except Cancelled:
+                        raise
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        self.events.put(("error", path, str(exc)))
+                    self.events.put(("youtube_prepared", index, len(paths), path.name))
+                self.events.put(("done", f"Concluído: {len(paths)}/{len(videos)} MP3 baixado(s). Confira a pasta para pendrive."))
+            except Cancelled:
+                self.events.put(("done", "Operação cancelada. Os arquivos já concluídos foram mantidos."))
+            except Exception as exc:
+                self.events.put(("done", "Falha ao importar do YouTube."))
+                self.events.put(("fatal", str(exc)))
+
+        self._start("youtube", worker, 1)
 
     def _analyze(self) -> None:
         try:
@@ -356,6 +476,34 @@ class App(tk.Tk):
                     self.busy = False
                     self.progress_text.set(event[1])
                     self._update_buttons()
+                elif kind == "youtube_count":
+                    self.progress.configure(maximum=max(1, event[1] * 2), value=0)
+                    self.progress_text.set(f"{event[1]} música(s) encontrada(s). Iniciando downloads...")
+                elif kind == "downloading":
+                    self.progress_text.set(f"Baixando {event[1]}/{event[2]} · {event[3]}")
+                elif kind == "downloaded":
+                    path = event[2]
+                    self.download_failures.pop(event[1].id, None)
+                    remaining_failure = next(iter(self.download_failures.values()), "")
+                    self.failure_text.set("Falha no download · " + remaining_failure
+                                          if remaining_failure else "")
+                    if path not in self.paths:
+                        self.paths.append(path)
+                    self._refresh()
+                elif kind == "download_error":
+                    self.download_failures[event[1].id] = f"{event[1].title}: {event[2]}"
+                    self.failure_text.set("Falha no download · " + self.download_failures[event[1].id])
+                    self.progress_text.set("Falha ao baixar: " + event[1].title)
+                    self._refresh()
+                elif kind == "download_progress":
+                    self.progress.configure(value=event[1])
+                elif kind == "youtube_prepared":
+                    self.progress.configure(value=event[2] + event[1])
+                    self.progress_text.set(f"Preparando {event[1]}/{event[2]} · {event[3]}")
+                elif kind == "fatal":
+                    messagebox.showerror("Importação não concluída", event[1])
+                elif kind == "notice":
+                    self.source_status.set(event[1])
         except queue.Empty:
             pass
         self.after(80, self._poll_events)

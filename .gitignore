@@ -1,0 +1,5 @@
+.rapidapi-key
+.deps/
+__pycache__/
+tests/__pycache__/
+*.partial.mp3
